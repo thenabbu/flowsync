@@ -153,9 +153,9 @@ GitHub will provide a public URL for the project.
 
 ## Contributors
 
-- [Nabbu Gupta](https://github.com/thenabbu) ([@thenabbu](https://github.com/thenabbu))
-- [Astro-coder07](https://github.com/Astro-coder07)
-- [Drishya-code](https://github.com/Drishya-code)
+- [Navya Gupta](https://github.com/thenabbu) ([@thenabbu](https://github.com/thenabbu))
+- [Drishya Singhal](https://github.com/Drishya-code) ([@Drishya-code](https://github.com/Drishya-code))
+- [Sanchit Grover](https://github.com/Astro-coder07) ([@Astro-coder07](https://github.com/Astro-coder07))
 
 ---
 ## License
