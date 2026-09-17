@@ -156,6 +156,7 @@ GitHub will provide a public URL for the project.
 - [Drishya Singhal](https://github.com/Drishya-code)
 - [Navya Gupta](https://github.com/thenabbu)
 - [Sanchit Grover](https://github.com/Astro-coder07)
+- [Ayush Srivastav](https://github.com/Ayush24107)
 
 ---
 ## License
