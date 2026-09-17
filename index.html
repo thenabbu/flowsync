@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FlowSync Network — Adaptive Traffic Control</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app-shell">
+  <header class="topbar">
+    <div><div class="eyebrow">CLOUD WARS · SMART CITY</div><h1>FlowSync Network</h1><p>Adaptive traffic signal simulation across a 2×2 grid</p></div>
+    <div class="top-actions">
+      <span id="modeBadge" class="badge">ADAPTIVE MODE</span>
+      <button id="emergencyBtn" class="danger">🚨 Dispatch emergency vehicle</button>
+      <button id="pedBtn" class="secondary">🚶 Call pedestrian crossing</button>
+      <button id="resetBtn" class="secondary">Reset</button>
+    </div>
+  </header>
+  <main class="layout">
+    <section class="main-panel">
+      <div class="panel-head"><div><h2>Live network</h2><p>Four coordinated intersections. Vehicles hand off between them as they travel through the grid.</p></div><div class="status"><span id="runDot"></span><span id="runLabel">Paused</span></div></div>
+      <div class="intersection-wrap"><canvas id="trafficCanvas" width="680" height="680" aria-label="Animated 2x2 grid of traffic intersections"></canvas></div>
+      <div class="controls">
+        <button id="startBtn" class="primary">▶ Start simulation</button>
+        <button id="stepBtn" class="secondary">Step</button>
+        <label>Mode<select id="modeSelect"><option value="adaptive">Adaptive</option><option value="fixed">Fixed-time</option></select></label>
+        <label>Traffic<select id="trafficSelect"><option value="normal">Normal</option><option value="rush">Rush hour</option><option value="imbalanced">East-heavy</option></select></label>
+        <label>Speed<input id="speedRange" type="range" min="0.5" max="3" step="0.5" value="1" /></label>
+      </div>
+      <div class="intersections-row" id="intersectionsRow"></div>
+    </section>
+    <aside class="side-panel">
+      <section class="card">
+        <div class="card-title">Network metrics</div>
+        <div class="metrics">
+          <div><span>Avg wait (full trip)</span><strong id="avgWait">0.0s</strong></div>
+          <div><span>Max queue (any node)</span><strong id="maxQueue">0</strong></div>
+          <div><span>Throughput</span><strong id="throughput">0</strong></div>
+          <div><span>Total delay</span><strong id="totalDelay">0s</strong></div>
+        </div>
+        <div class="emergency-status">Active vehicles: <b id="activeVehicles">0</b></div>
+        <div class="emergency-status">Pedestrian crossings granted: <b id="pedCrossings">0</b></div>
+        <div class="emergency-status" id="emergencyStatus">No active emergency</div>
+      </section>
+      <section class="card">
+        <div class="card-title">🧠 Explainable AI decisions</div>
+        <div class="decisions-list" id="decisions"></div>
+      </section>
+      <section class="card"><div class="card-title">Controller log</div><div id="log" class="log" aria-live="polite"></div></section>
+    </aside>
+  </main>
+  <section class="bottom-grid">
+    <section class="card"><div class="card-title">Performance comparison</div><div class="compare"><div><span>Fixed-time baseline</span><strong id="fixedResult">Run baseline</strong></div><div><span>Adaptive controller</span><strong id="adaptiveResult">Run adaptive</strong></div><div><span>Waiting-time change</span><strong id="improvement">—</strong></div></div><button id="compareBtn" class="primary">Run 60-second comparison</button><p id="compareNote" class="muted">Both modes use the same traffic seed for a fair comparison. No emergency vehicles during the test.</p></section>
+    <section class="card"><div class="card-title">Queue history</div><canvas id="chartCanvas" width="700" height="220" aria-label="Queue history chart"></canvas></section>
+  </section>
+</div>
+<script src="script.js"></script>
+</body>
+</html>
