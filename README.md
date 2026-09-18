@@ -29,7 +29,7 @@ It demonstrates how adaptive traffic signals can respond to changing vehicle que
   - Dispatch an emergency vehicle
   - Temporarily prioritizes its route through intersections
 
-- **Pedestrian crossing requests**
+- **High-visibility pedestrian crossing / WALK phase requests**
   - Simulates pedestrian crossing interruptions
   - Gives pedestrians a dedicated crossing phase
 

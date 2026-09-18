@@ -15,6 +15,11 @@ const TILE_HALF=150;
 const PED_DURATION=5;
 const PED_CHANCE=0.0012;
 const YELLOW_DURATION=3;
+// Stop line sits at the zebra crossing (drawIntersection draws the stripes at
+// offset = boxHalf+7 = 42 from center). Solving posToOffset(pos) = -42 for pos
+// gives ~131; we stop a hair earlier so the car's front bumper lands behind
+// the stripes rather than on them.
+const STOP_LINE=124;
 
 let state,raf=null,last=0,acc=0,seed=42,nextIdCounter=1;
 
@@ -31,7 +36,7 @@ function buildSchedules(profile,baseSeed){
   });
 }
 
-function freshIntersection(){return {phase:0,phaseTime:0,phaseDuration:20,signalState:'green',amberTimer:0,queues:{N:[],E:[],S:[],W:[]},vehicles:[],served:0,totalWait:0,maxQueue:0,lastDecision:'Waiting to start',preempting:false,pedestrian:{active:false,timer:0},history:[]}}
+function freshIntersection(){return {phase:0,phaseTime:0,phaseDuration:20,signalState:'green',amberTimer:0,queues:{N:[],E:[],S:[],W:[]},vehicles:[],served:0,totalWait:0,maxQueue:0,lastDecision:'Waiting to start',preempting:false,pedestrian:{active:false,timer:0,side:null},history:[]}}
 
 function fresh(){
   state={
@@ -61,7 +66,7 @@ function addVehicle(id,d,delay=0,emergency=false,tripWait=0){
 function logMsg(id,s){
   state.logs.unshift(`[${state.t.toFixed(1)}s] ${id!=='NET'?'['+id+'] ':''}${s}`);
   state.logs=state.logs.slice(0,20);
-  $('log').innerHTML=state.logs.map(x=>`<div>${x}</div>`).join('');
+  $('log').innerHTML=state.logs.map(x=>`<div class="border-b border-base-300/60 py-0.5">${x}</div>`).join('');
 }
 
 function pushDecision(d){state.decisions.unshift(d);state.decisions=state.decisions.slice(0,8)}
@@ -126,13 +131,22 @@ function tick(dt){
     for(const v of iState.vehicles){
       if(v.passed)continue;
       const green=effectiveGreen(iState,v.d);
-      if(v.pos>165&&green)v.committed=true;
-      let speed=(green||v.committed)?.95:.18;
-      if(v.pos>165&&!green&&!v.committed)speed=0;
-      v.pos+=speed*dt*35;
-      if(v.pos>165&&green)v.committed=true;
+      const beforeStop=!v.committed && v.pos<STOP_LINE;
+      // A vehicle may cross the stop line only while its approach is green.
+      // While red/yellow/pedestrian phase is active, clamp it at the stop line.
+      if(!v.committed && green && v.pos>=STOP_LINE-2){
+        v.committed=true;
+      }
+      let speed=(green||v.committed)?.95:0;
+      const nextPos=v.pos+speed*dt*35;
+      if(!v.committed && !green){
+        v.pos=Math.min(v.pos,STOP_LINE);
+      }else{
+        v.pos=nextPos;
+      }
+      if(!v.committed && !green && v.pos>=STOP_LINE)v.pos=STOP_LINE;
       if(v.committed&&v.pos>=430){v.passed=true;handleExit(id,v);continue}
-      if(v.pos>110&&!green&&!v.committed){v.wait+=dt;v.tripWait+=dt}
+      if(v.pos>=105&&!green&&!v.committed){v.wait+=dt;v.tripWait+=dt}
     }
     iState.vehicles=iState.vehicles.filter(v=>!v.passed);
     for(const d of ['N','E','S','W'])iState.queues[d]=iState.vehicles.filter(v=>v.d===d&&v.pos>100&&v.pos<250&&!v.passed);
@@ -200,11 +214,12 @@ function tick(dt){
 function triggerPedestrian(id){
   const iState=state.intersections[id];
   if(iState.preempting||iState.pedestrian.active)return false;
-  iState.pedestrian.active=true;iState.pedestrian.timer=0;
+  const side=['N','S','E','W'][Math.floor(Math.random()*4)];
+  iState.pedestrian.active=true;iState.pedestrian.timer=0;iState.pedestrian.side=side;
   state.pedCount++;
-  iState.lastDecision=`🚶 Pedestrian crossing called — all approaches held at the crosswalk for ${PED_DURATION}s.`;
+  iState.lastDecision=`🚶 Pedestrian crossing called on the ${side} crosswalk — all approaches held for ${PED_DURATION}s.`;
   logMsg(id,iState.lastDecision);
-  pushDecision({id,type:'pedestrian',t:state.t,reasoning:`Walk button pressed at ${id} — every approach stops at the zebra crossing for ${PED_DURATION}s, regardless of signal phase.`});
+  pushDecision({id,type:'pedestrian',t:state.t,reasoning:`Walk button pressed at ${id} (${side} crosswalk) — every approach stops at that zebra crossing for ${PED_DURATION}s, regardless of signal phase.`});
   return true;
 }
 
@@ -239,21 +254,109 @@ function drawIntersection(id,iState){
   ctx.setLineDash([]);
 
   const walking=iState.pedestrian&&iState.pedestrian.active;
-  const stripeAlpha=walking?(0.6+0.4*Math.sin(state.t*10)):0.55;
-  ctx.fillStyle=`rgba(255,255,255,${stripeAlpha})`;
+  const activeSide=walking?iState.pedestrian.side:null;
   const gap=boxHalf+7;
-  for(let s=-roadHalf+5;s<roadHalf-4;s+=9){
-    ctx.fillRect(cx+s,cy-gap-4,6,8);
-    ctx.fillRect(cx+s,cy+gap-4,6,8);
-    ctx.fillRect(cx-gap-4,cy+s,8,6);
-    ctx.fillRect(cx+gap-4,cy+s,8,6);
-  }
+
+  // Geometry for each of the 4 crosswalk bands, keyed by compass side.
+  // Each band is a strip laid straight across its approach road, exactly
+  // where the pedestrian actually walks (not through the middle of the box).
+  const BANDS={
+    N:{axis:'h', cx1:cx-roadHalf, cx2:cx+roadHalf, line:cy-gap, stopA:cy-gap-18, stopB:null},
+    S:{axis:'h', cx1:cx-roadHalf, cx2:cx+roadHalf, line:cy+gap, stopA:cy+gap+15, stopB:null},
+    E:{axis:'v', cy1:cy-roadHalf, cy2:cy+roadHalf, line:cx+gap, stopA:cx+gap+15, stopB:null},
+    W:{axis:'v', cy1:cy-roadHalf, cy2:cy+roadHalf, line:cx-gap, stopA:cx-gap-18, stopB:null}
+  };
+
+  // Localized on-road alert glow, drawn only under the crosswalk band that is
+  // actually in use — replaces a screen-wide banner with a spot alert right
+  // where the pedestrian is crossing.
   if(walking){
-    ctx.strokeStyle='rgba(238,245,255,'+stripeAlpha+')';ctx.lineWidth=3;
-    ctx.beginPath();ctx.arc(cx,cy,boxHalf+16,0,Math.PI*2);ctx.stroke();
-    ctx.font='16px Segoe UI';ctx.fillStyle='#eef5ff';
-    ctx.fillText('🚶',cx-8,cy-gap-14);
+    const glowAlpha=0.20+0.14*Math.sin(state.t*8);
+    const hb=20;
+    const b=BANDS[activeSide];
+    ctx.save();ctx.globalAlpha=glowAlpha;ctx.fillStyle='#ff5c70';
+    if(b.axis==='h')ctx.fillRect(cx-roadHalf,b.line-hb,roadHalf*2,hb*2);
+    else ctx.fillRect(b.line-hb,cy-roadHalf,hb*2,roadHalf*2);
+    ctx.restore();
   }
+
+  for(const side of ['N','S','E','W']){
+    const isActive=side===activeSide;
+    const b=BANDS[side];
+    const pulse=isActive?(0.78+0.22*Math.sin(state.t*8)):0.58;
+    ctx.save();
+    ctx.globalAlpha=pulse;
+    ctx.fillStyle=isActive?'#ff5c70':'#f8fafc';
+    if(b.axis==='h'){
+      for(let s=-roadHalf+2;s<roadHalf-2;s+=8)ctx.fillRect(cx+s,b.line-7,5,14);
+    }else{
+      for(let s=-roadHalf+2;s<roadHalf-2;s+=8)ctx.fillRect(b.line-7,cy+s,14,5);
+    }
+    ctx.restore();
+    // Stop line for this band — turns red only while this band is in use.
+    ctx.save();ctx.globalAlpha=pulse;
+    ctx.fillStyle=isActive?'#ff5c70':'#f8fafc';
+    if(b.axis==='h')ctx.fillRect(cx-roadHalf,b.stopA,roadHalf*2,3);
+    else ctx.fillRect(b.stopA,cy-roadHalf,3,roadHalf*2);
+    ctx.restore();
+  }
+
+  if(walking){
+    // Label sits right beside the active crossing, not floating generically
+    // over the tile, so it's obvious which crosswalk the alert refers to.
+    const b=BANDS[activeSide];
+    ctx.font='bold 10px Segoe UI';
+    ctx.fillStyle='#ff5c70';
+    if(b.axis==='h'){
+      ctx.textAlign='center';
+      ctx.fillText('🚶 WALK — VEHICLES STOP',cx,activeSide==='N'?b.line-24:b.line+34);
+    }else{
+      ctx.textAlign=activeSide==='E'?'left':'right';
+      ctx.fillText('🚶 WALK',activeSide==='E'?b.line+8:b.line-8,cy-roadHalf-6);
+    }
+
+    // Animated pedestrian, walking along the actual zebra band (not through
+    // the middle of the box) with a real leg/arm swing so the motion reads
+    // as "walking" rather than "sliding".
+    const b2=BANDS[activeSide];
+    const walkT=(state.t%PED_DURATION)/PED_DURATION;
+    const travel=roadHalf*2-18;
+    const dir=1;
+    let px,py;
+    if(b2.axis==='h'){ px=cx-roadHalf+9+walkT*travel; py=b2.line; }
+    else{ px=b2.line; py=cy-roadHalf+9+walkT*travel; }
+    const vertical=b2.axis==='v';
+    const swing=Math.sin(state.t*9)*0.55;
+    ctx.save();
+    ctx.translate(px,py);
+    ctx.strokeStyle='#f8fafc';ctx.fillStyle='#f8fafc';
+    ctx.lineWidth=2.4;ctx.lineCap='round';ctx.lineJoin='round';
+    // head
+    ctx.beginPath();ctx.arc(0,-15,3.6,0,Math.PI*2);ctx.fill();
+    // torso
+    ctx.beginPath();ctx.moveTo(0,-11);ctx.lineTo(0,1);ctx.stroke();
+    // legs (pendulum from the hip, opposite phase)
+    ctx.beginPath();
+    ctx.moveTo(0,1);ctx.lineTo(7*Math.sin(swing),1+8*Math.cos(swing));
+    ctx.moveTo(0,1);ctx.lineTo(7*Math.sin(-swing),1+8*Math.cos(-swing));
+    ctx.stroke();
+    // arms (opposite phase to legs, like a natural walk)
+    ctx.beginPath();
+    ctx.moveTo(0,-9);ctx.lineTo(6*Math.sin(-swing),-9+7*Math.cos(-swing));
+    ctx.moveTo(0,-9);ctx.lineTo(6*Math.sin(swing),-9+7*Math.cos(swing));
+    ctx.stroke();
+    ctx.restore();
+
+    // Small arrow ahead of the pedestrian, making the direction of travel obvious.
+    ctx.save();
+    if(vertical){ctx.translate(px,py+dir*16);ctx.rotate(Math.PI/2);}
+    else{ctx.translate(px+dir*16,py-1);}
+    ctx.strokeStyle='#38d9a9';ctx.fillStyle='#38d9a9';ctx.lineWidth=2;ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(-6,0);ctx.lineTo(6,0);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(6,0);ctx.lineTo(1,-4);ctx.lineTo(1,4);ctx.closePath();ctx.fill();
+    ctx.restore();
+  }
+  ctx.textAlign='left';
   function lightColor(d){if(iState.pedestrian&&iState.pedestrian.active)return'#ff5c70';if(isYellowFor(iState,d))return'#ffc94a';return greenFor(iState,d)?'#39d98a':'#ff5c70'}
   ctx.fillStyle=lightColor('N');ctx.fillRect(cx-14,cy-boxHalf-9,12,6);
   ctx.fillStyle=lightColor('E');ctx.fillRect(cx+boxHalf+3,cy-2,6,12);
@@ -282,39 +385,42 @@ function drawIntersection(id,iState){
 
 function draw(){
   ctx.clearRect(0,0,680,680);
-  ctx.fillStyle='#071a1d';ctx.fillRect(0,0,680,680);
+  ctx.fillStyle='#050a10';ctx.fillRect(0,0,680,680);
   for(const id of IDS)drawIntersection(id,state.intersections[id]);
-  ctx.fillStyle='#7fa8ac';ctx.font='12px Segoe UI';
+  ctx.fillStyle='#7fa8ac';ctx.font='12px "JetBrains Mono",monospace';
   ctx.fillText(`t = ${state.t.toFixed(1)}s`,10,16);
   ctx.fillText(`mode: ${state.mode}`,10,32);
 }
 
 function drawChart(){
   cctx.clearRect(0,0,700,220);
-  cctx.fillStyle='#071a1d';cctx.fillRect(0,0,700,220);
+  cctx.fillStyle='#050a10';cctx.fillRect(0,0,700,220);
   cctx.strokeStyle='#1f3d44';cctx.lineWidth=1;
   for(let y=30;y<210;y+=45){cctx.beginPath();cctx.moveTo(35,y);cctx.lineTo(680,y);cctx.stroke()}
   const h=state.historyGlobal;
   if(!h.length)return;
   const max=Math.max(10,...h.map(p=>p.q));
-  cctx.strokeStyle='#5ec8ff';cctx.lineWidth=3;cctx.beginPath();
+  cctx.strokeStyle='#35e0ff';cctx.lineWidth=3;cctx.beginPath();
   h.forEach((p,i)=>{const x=35+i/(Math.max(1,h.length-1))*640,y=205-p.q/max*165;i?cctx.lineTo(x,y):cctx.moveTo(x,y)});
   cctx.stroke();
-  cctx.fillStyle='#7fa8ac';cctx.font='11px Segoe UI';
+  cctx.fillStyle='#7fa8ac';cctx.font='11px "JetBrains Mono",monospace';
   cctx.fillText('Total queued vehicles — whole network',35,18);
   cctx.fillText('0',15,208);cctx.fillText(String(max),8,42);
 }
 
 function render(){
   draw();
-  $('modeBadge').textContent=state.mode==='adaptive'?'ADAPTIVE MODE':'FIXED-TIME MODE';
+  const modeBadge=$('modeBadge');
+  modeBadge.textContent=state.mode==='adaptive'?'ADAPTIVE MODE':'FIXED-TIME MODE';
+  modeBadge.className='badge badge-lg font-bold '+(state.mode==='adaptive'?'badge-primary':'badge-secondary');
   $('intersectionsRow').innerHTML=IDS.map(id=>{
     const s=state.intersections[id];
     const total=['N','E','S','W'].reduce((a,d)=>a+queueCount(s,d),0);
     const badge=s.preempting?' 🚨':(s.pedestrian.active?' 🚶':(s.signalState==='yellow'?' 🟡':''));
-    const phaseLabel=s.pedestrian.active?'Crosswalk — all stop':(s.signalState==='yellow'?`${phaseName(s)} — yellow`:phaseName(s));
+    const phaseLabel=s.pedestrian.active?`Crosswalk (${s.pedestrian.side}) — all stop`:(s.signalState==='yellow'?`${phaseName(s)} — yellow`:phaseName(s));
     const countdown=s.signalState==='yellow'?Math.max(0,YELLOW_DURATION-s.amberTimer):Math.max(0,s.phaseDuration-s.phaseTime);
-    return `<div class="mini-node ${s.preempting?'preempt':''} ${s.pedestrian.active?'walking':''} ${!s.preempting&&!s.pedestrian.active&&s.signalState==='yellow'?'yellow':''}"><div class="mini-node-id">${id}${badge}</div><div class="mini-node-phase">${phaseLabel}</div><div class="mini-node-count">${countdown.toFixed(1)}s · Q:${total}</div></div>`;
+    const ring=s.preempting?'border-error shadow-[0_0_16px_-2px_var(--color-error)]':(s.pedestrian.active?'shadow-[0_0_16px_-2px_rgba(255,255,255,.35)]':(s.signalState==='yellow'?'border-warning shadow-[0_0_16px_-2px_var(--color-warning)]':''));
+    return `<div class="tile-card ${ring} rounded-box p-3 text-center transition-colors"><div class="text-primary font-extrabold text-xs mono">${id}${badge}</div><div class="text-xs mt-1">${phaseLabel}</div><div class="text-xs opacity-60 mt-0.5 mono">${countdown.toFixed(1)}s · Q:${total}</div></div>`;
   }).join('');
   $('avgWait').textContent=(state.globalServed?state.globalTotalWait/state.globalServed:0).toFixed(1)+'s';
   $('maxQueue').textContent=state.globalMaxQueue;
@@ -324,19 +430,27 @@ function render(){
   $('activeVehicles').textContent=activeVehicles;
   $('pedCrossings').textContent=state.pedCount;
   const preemptCount=IDS.filter(id=>state.intersections[id].preempting).length;
-  $('emergencyStatus').textContent=preemptCount?`${preemptCount} intersection(s) under preemption`:'No active emergency';
-  $('emergencyStatus').style.color=preemptCount?'#ff5c70':'';
+  const emStatus=$('emergencyStatus');
+  emStatus.textContent=preemptCount?`${preemptCount} intersection(s) under preemption`:'No active emergency';
+  emStatus.className='text-xs mt-1 '+(preemptCount?'text-error font-bold':'opacity-60');
   $('decisions').innerHTML=state.decisions.map(d=>{
     let bars='';
     if(d.ns!==undefined){
       const mx=Math.max(1,d.ns,d.ew);
-      bars=`<div class="mini-bars"><div class="mini-bar-row"><span>N/S</span><div class="bar"><span style="width:${d.ns/mx*100}%;background:var(--blue)"></span></div><b>${d.ns}</b></div><div class="mini-bar-row"><span>E/W</span><div class="bar"><span style="width:${d.ew/mx*100}%;background:var(--accent)"></span></div><b>${d.ew}</b></div></div>`;
+      bars=`<div class="flex flex-col gap-1 mt-2">
+        <div class="flex items-center gap-2 text-[11px] opacity-70"><span class="w-8">N/S</span><progress class="progress progress-info flex-1" value="${d.ns}" max="${mx}"></progress><b>${d.ns}</b></div>
+        <div class="flex items-center gap-2 text-[11px] opacity-70"><span class="w-8">E/W</span><progress class="progress progress-accent flex-1" value="${d.ew}" max="${mx}"></progress><b>${d.ew}</b></div>
+      </div>`;
     }
     const icon=d.type==='preempt'?'🚨':d.type==='resume'?'✅':d.type==='dispatch'?'🚑':d.type==='pedestrian'?'🚶':d.type==='ped-clear'?'🚦':'🔁';
-    return `<div class="decision-item"><div class="decision-head"><span>${icon} ${d.id}</span><span class="muted">${d.t.toFixed(1)}s</span></div><div class="decision-text">${d.reasoning}</div>${bars}</div>`;
-  }).join('')||'<div class="muted">No decisions yet — start the simulation.</div>';
+    return `<div class="tile-card rounded-box p-3">
+      <div class="flex justify-between items-center text-xs font-bold mb-1.5"><span class="badge badge-ghost badge-sm">${icon} ${d.id}</span><span class="opacity-50 font-normal mono">${d.t.toFixed(1)}s</span></div>
+      <div class="text-xs opacity-70 leading-relaxed">${d.reasoning}</div>${bars}
+    </div>`;
+  }).join('')||'<div class="text-xs opacity-50">No decisions yet — start the simulation.</div>';
   $('runLabel').textContent=state.running?'Running':'Paused';
-  $('runDot').parentElement.className='status'+(state.running?' running':'');
+  $('runDot').className='inline-block w-2 h-2 rounded-full '+(state.running?'bg-success shadow-[0_0_8px_var(--color-success)]':'bg-base-300');
+
   drawChart();
 }
 
