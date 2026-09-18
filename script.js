@@ -20,8 +20,29 @@ const YELLOW_DURATION=3;
 // gives ~131; we stop a hair earlier so the car's front bumper lands behind
 // the stripes rather than on them.
 const STOP_LINE=124;
+// Minimum gap (in the same pos units as STOP_LINE) a queued vehicle keeps
+// behind the car ahead of it in the same lane, so a red-light queue renders
+// as a visible line of cars instead of every arrival overlapping the last.
+const MIN_GAP=38;
+// Palette assigned per-vehicle (by id) instead of by travel axis, so the
+// network reads as varied real traffic rather than two flat colors.
+const CAR_COLORS=['#5ec8ff','#ff9f5e','#a78bfa','#34d399','#f472b6','#fbbf24','#60a5fa','#fb7185'];
+// Vehicles leaving the grid at a corner with no connecting road fade out
+// over this pos range (430 = edge of the intersection box, 610 = old hard
+// despawn point) instead of popping out of existence.
+const EXIT_FADE_START=430,EXIT_FADE_END=610;
 
 let state,raf=null,last=0,acc=0,seed=42,nextIdCounter=1;
+
+function roundRect(c,x,y,w,h,r){
+  c.beginPath();
+  c.moveTo(x+r,y);
+  c.arcTo(x+w,y,x+w,y+h,r);
+  c.arcTo(x+w,y+h,x,y+h,r);
+  c.arcTo(x,y+h,x,y,r);
+  c.arcTo(x,y,x+w,y,r);
+  c.closePath();
+}
 
 function lcg(s0){let s=s0>>>0;return function(){s=(s*1664525+1013904223)>>>0;return s/4294967296}}
 
@@ -110,14 +131,18 @@ function turnOptions(inD){
 }
 
 function chooseTurn(id,inD){
-  const opts=turnOptions(inD), available=Object.entries(opts).filter(([type,outD])=>CONN[id][outD]);
-  if(!available.length)return {type:'uturn',outD:opts.uturn};
-  // Prefer straight, then left/right, with U-turn less common when alternatives exist.
+  const opts=turnOptions(inD);
+  // Every turn option is available, including ones that lead off the edge
+  // of the grid — a corner intersection has no neighbour in 2 of the 4
+  // compass directions, and vehicles need to actually be able to pick those
+  // to ever leave the network instead of looping through it forever.
+  const entries=Object.entries(opts);
+  // Prefer straight, then left/right, with U-turn less common.
   const weights={straight:0.50,left:0.22,right:0.22,uturn:0.06};
-  const total=available.reduce((a,[type])=>a+weights[type],0);
+  const total=entries.reduce((a,[type])=>a+weights[type],0);
   let r=Math.random()*total;
-  for(const [type,outD] of available){r-=weights[type];if(r<=0)return {type,outD};}
-  const [type,outD]=available[0];return {type,outD};
+  for(const [type,outD] of entries){r-=weights[type];if(r<=0)return {type,outD};}
+  const [type,outD]=entries[0];return {type,outD};
 }
 
 function handleExit(id,v){
@@ -191,6 +216,17 @@ function tick(dt){
       }
       if(v.pos>=105&&!green&&!v.committed){v.wait+=dt;v.tripWait+=dt}
     }
+    // Enforce a following gap among queued (not-yet-committed) vehicles in
+    // each lane so arrivals stack up single-file behind the car ahead
+    // rather than occupying the exact same spot.
+    for(const d of ['N','E','S','W']){
+      const lane=iState.vehicles.filter(v=>v.d===d&&!v.committed&&!v.exiting&&!v.passed);
+      lane.sort((a,b)=>b.pos-a.pos);
+      for(let i=1;i<lane.length;i++){
+        const maxAllowed=lane[i-1].pos-MIN_GAP;
+        if(lane[i].pos>maxAllowed)lane[i].pos=maxAllowed;
+      }
+    }
     iState.vehicles=iState.vehicles.filter(v=>!v.passed);
     for(const d of ['N','E','S','W'])iState.queues[d]=iState.vehicles.filter(v=>v.d===d&&v.pos>100&&v.pos<250&&!v.passed);
     iState.maxQueue=Math.max(iState.maxQueue,...['N','E','S','W'].map(d=>queueCount(iState,d)));
@@ -256,6 +292,29 @@ function spawnEmergency(){
   pushDecision({id,type:'dispatch',t:state.t,reasoning:`New emergency vehicle spawned at ${id} heading ${d}. Signals along its path will preempt as it approaches.`});
 }
 
+// Triggered by the "Call pedestrian crossing" button. Picks an intersection
+// that isn't already mid-crossing or under emergency preemption, forces all
+// four approaches to red for PED_DURATION seconds, and logs the decision.
+function callPedestrian(){
+  const candidates=IDS.filter(id=>{
+    const s=state.intersections[id];
+    return !s.pedestrian.active && !s.preempting;
+  });
+  if(!candidates.length){
+    logMsg('NET','🚶 Pedestrian call ignored — every intersection is already mid-crossing or under emergency preemption.');
+    return;
+  }
+  const id=candidates[Math.floor(Math.random()*candidates.length)];
+  const side=['N','E','S','W'][Math.floor(Math.random()*4)];
+  const iState=state.intersections[id];
+  iState.pedestrian={active:true,timer:PED_DURATION,side};
+  iState.phaseTime=0;
+  state.pedCount++;
+  iState.lastDecision=`🚶 Pedestrian crossing called on the ${side} side — all approaches stop.`;
+  logMsg(id,iState.lastDecision);
+  pushDecision({id,type:'pedestrian',t:state.t,reasoning:`Pedestrian requested a walk phase on the ${side} crosswalk — all vehicle phases paused for ${PED_DURATION}s.`});
+}
+
 function posToOffset(pos){return ((pos+30)/460)*280-140}
 
 function drawIntersection(id,iState){
@@ -264,6 +323,19 @@ function drawIntersection(id,iState){
   ctx.fillStyle='#16333a';
   ctx.fillRect(cx-roadHalf,cy-half,roadHalf*2,half*2);
   ctx.fillRect(cx-half,cy-roadHalf,half*2,roadHalf*2);
+  // Corners of the grid have two approaches with no neighbouring intersection.
+  // Fade the road out toward the canvas edge on those approaches so an exiting
+  // vehicle looks like it's driving off-frame, not floating over bare canvas.
+  for(const d of ['N','E','S','W']){
+    if(CONN[id][d])continue;
+    let grad;
+    ctx.save();
+    if(d==='N'){grad=ctx.createLinearGradient(0,cy-half,0,0);grad.addColorStop(0,'#16333a');grad.addColorStop(1,'rgba(22,51,58,0)');ctx.fillStyle=grad;ctx.fillRect(cx-roadHalf,0,roadHalf*2,cy-half);}
+    else if(d==='S'){grad=ctx.createLinearGradient(0,cy+half,0,680);grad.addColorStop(0,'#16333a');grad.addColorStop(1,'rgba(22,51,58,0)');ctx.fillStyle=grad;ctx.fillRect(cx-roadHalf,cy+half,roadHalf*2,680-(cy+half));}
+    else if(d==='E'){grad=ctx.createLinearGradient(cx+half,0,680,0);grad.addColorStop(0,'#16333a');grad.addColorStop(1,'rgba(22,51,58,0)');ctx.fillStyle=grad;ctx.fillRect(cx+half,cy-roadHalf,680-(cx+half),roadHalf*2);}
+    else{grad=ctx.createLinearGradient(cx-half,0,0,0);grad.addColorStop(0,'#16333a');grad.addColorStop(1,'rgba(22,51,58,0)');ctx.fillStyle=grad;ctx.fillRect(0,cy-roadHalf,cx-half,roadHalf*2);}
+    ctx.restore();
+  }
   ctx.fillStyle='#0b2228';
   ctx.fillRect(cx-boxHalf,cy-boxHalf,boxHalf*2,boxHalf*2);
   ctx.strokeStyle=iState.preempting?'#ff5c70':(iState.signalState==='yellow'?'#ffc94a':'#3a5a5e');
@@ -411,15 +483,18 @@ function drawIntersection(id,iState){
       else if(v.d==='E'){x=cx+off;y=cy+12;ang=Math.PI/2}
       else{x=cx-off;y=cy-12;ang=-Math.PI/2}
     }
-    ctx.save();ctx.translate(x,y);ctx.rotate(ang);
+    const exitAlpha=v.exiting?Math.max(0,1-(v.pos-EXIT_FADE_START)/(EXIT_FADE_END-EXIT_FADE_START)):1;
+    ctx.save();ctx.translate(x,y);ctx.rotate(ang);ctx.globalAlpha=exitAlpha;
     if(v.emergency){
+      ctx.fillStyle='rgba(0,0,0,.35)';roundRect(ctx,-6,-10,14,26,3);ctx.fill();
       ctx.fillStyle=(Math.floor(state.t*4)%2)?'#ff5c70':'#eef5ff';
-      ctx.fillRect(-7,-13,14,26);
-      ctx.fillStyle='#39d98a';ctx.fillRect(-5,-3,10,6);
+      roundRect(ctx,-7,-13,14,26,3);ctx.fill();
+      ctx.fillStyle='#39d98a';roundRect(ctx,-5,-3,10,6,1.5);ctx.fill();
     }else{
-      ctx.fillStyle=v.d==='N'||v.d==='S'?'#5ec8ff':'#ff9f5e';
-      ctx.fillRect(-6,-11,12,22);
-      ctx.fillStyle='#dbeafe';ctx.fillRect(-4,-6,8,5);
+      ctx.fillStyle='rgba(0,0,0,.35)';roundRect(ctx,-6,-9,12,22,3);ctx.fill();
+      ctx.fillStyle=CAR_COLORS[v.id%CAR_COLORS.length];
+      roundRect(ctx,-6,-11,12,22,3);ctx.fill();
+      ctx.fillStyle='#dbeafe';roundRect(ctx,-4,-6,8,5,1.5);ctx.fill();
     }
     ctx.restore();
   }
