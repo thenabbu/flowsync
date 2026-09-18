@@ -33,37 +33,6 @@
     </div>
   </header>
 
-  <section class="glass rounded-box p-4 md:p-5">
-    <div class="section-eyebrow mb-3">CONTROLS</div>
-    <div class="flex flex-wrap items-end gap-3">
-      <button id="startBtn" class="btn btn-primary">▶ Start simulation</button>
-      <button id="stepBtn" class="btn btn-outline">Step</button>
-      <button id="emergencyBtn" class="btn btn-error">🚨 Dispatch emergency vehicle</button>
-      <button id="pedBtn" class="btn btn-outline">🚶 Call pedestrian crossing</button>
-      <button id="resetBtn" class="btn btn-ghost">Reset</button>
-      <div class="w-px self-stretch bg-white/10 mx-1 hidden md:block"></div>
-      <div class="flex flex-col gap-1">
-        <span class="text-xs opacity-60">Mode</span>
-        <select id="modeSelect" class="select select-sm">
-          <option value="adaptive">Adaptive</option>
-          <option value="fixed">Fixed-time</option>
-        </select>
-      </div>
-      <div class="flex flex-col gap-1">
-        <span class="text-xs opacity-60">Traffic</span>
-        <select id="trafficSelect" class="select select-sm">
-          <option value="normal">Normal</option>
-          <option value="rush">Rush hour</option>
-          <option value="easy-heavy">Easy-heavy</option>
-        </select>
-      </div>
-      <div class="flex flex-col gap-1 min-w-[140px]">
-        <span class="text-xs opacity-60">Speed</span>
-        <input id="speedRange" type="range" min="0.5" max="3" step="0.5" value="1" class="range range-primary range-sm" />
-      </div>
-    </div>
-  </section>
-
   <main class="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-5">
     <section class="glass rounded-box p-5">
       <div class="flex justify-between items-start gap-3 flex-wrap">
@@ -72,9 +41,69 @@
           <p class="text-xs opacity-60 m-0 mt-1">Four coordinated intersections. Vehicles hand off between them as they travel through the grid.</p>
         </div>
       </div>
-      <div class="canvas-frame mt-4 rounded-box">
+
+      <div class="canvas-frame map-frame mt-4 rounded-box">
         <canvas id="trafficCanvas" width="680" height="680" aria-label="Animated 2x2 grid of traffic intersections"></canvas>
+
+        <select id="modeSelect" class="hidden">
+          <option value="adaptive">Adaptive</option>
+          <option value="fixed">Fixed-time</option>
+        </select>
+        <select id="trafficSelect" class="hidden">
+          <option value="normal">Normal</option>
+          <option value="rush">Rush hour</option>
+          <option value="easy-heavy">Easy-heavy</option>
+        </select>
+
+        <div class="map-badge">
+          <div class="flex items-center gap-2">
+            <img src="logo.jpg" alt="" class="map-badge-logo" />
+            <div class="map-badge-title">FlowSync</div>
+          </div>
+          <div class="map-badge-eyebrow">LIVE MAP · SIM DEMO</div>
+          <p class="map-badge-sub">Four coordinated intersections<br/>Adaptive · Safe · Efficient</p>
+        </div>
+
+        <div class="map-compass" title="North">
+          <span class="map-compass-arrow">▲</span>N
+        </div>
+        <div class="map-loc-badge">Adaptive Traffic Grid</div>
+
+        <div class="map-bar">
+          <button id="startBtn" class="map-start-btn">▶ Start simulation</button>
+          <button id="stepBtn" class="map-icon-btn">Step</button>
+
+          <div class="map-bar-group">
+            <span class="map-bar-label">Mode</span>
+            <div class="seg-group" id="modeSeg">
+              <button class="seg-btn active" data-mode="adaptive">Adaptive</button>
+              <button class="seg-btn" data-mode="fixed">Fixed</button>
+            </div>
+          </div>
+
+          <div class="map-bar-group">
+            <span class="map-bar-label">Traffic</span>
+            <div class="seg-group" id="trafficSeg">
+              <button class="seg-btn active" data-traffic="normal">Normal</button>
+              <button class="seg-btn" data-traffic="rush">Rush</button>
+              <button class="seg-btn" data-traffic="easy-heavy">Easy-Heavy</button>
+            </div>
+          </div>
+
+          <div class="map-bar-group">
+            <span class="map-bar-label">Speed</span>
+            <input id="speedRange" type="range" min="0.5" max="3" step="0.5" value="1" class="range range-primary range-xs w-20" />
+          </div>
+
+          <div class="map-bar-spacer"></div>
+
+          <button id="emergencyBtn" class="map-icon-btn map-icon-warn">🚑 Emergency</button>
+          <button id="pedBtn" class="map-icon-btn">🚶 Pedestrian</button>
+          <button id="resetBtn" class="map-icon-btn">Reset</button>
+          <div class="map-icon-btn map-signals-pill"><span class="signal-dot"></span><span id="signalsLabel">Adaptive Signals</span></div>
+        </div>
       </div>
+
       <div id="intersectionsRow" class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5"></div>
     </section>
 

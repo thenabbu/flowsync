@@ -34,6 +34,71 @@ const EXIT_FADE_START=430,EXIT_FADE_END=610;
 
 let state,raf=null,last=0,acc=0,seed=42,nextIdCounter=1;
 
+// --- Aerial map backdrop -----------------------------------------------
+// The 2x2 intersection grid leaves a 3x3 pattern of "city blocks" between
+// the roads (see CENTERS/TILE_HALF above). We render those as a light
+// aerial-map backdrop — parks, a central plaza, building blocks — behind
+// the roads, so the network reads like a real live map instead of a bare
+// dark grid. Tree/building positions are generated once from a seeded RNG
+// (not per frame) so they stay put instead of jittering every redraw.
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function makeTrees(x,y,w,h,n,sd){const rnd=mulberry32(sd),out=[];for(let i=0;i<n;i++)out.push({x:x+10+rnd()*(w-20),y:y+10+rnd()*(h-20),r:3+rnd()*3.2});return out}
+function makeBuildings(x,y,w,h,n,sd){const rnd=mulberry32(sd),out=[];for(let i=0;i<n;i++){const bw=16+rnd()*24,bh=16+rnd()*24;out.push({x:x+6+rnd()*Math.max(4,w-bw-12),y:y+6+rnd()*Math.max(4,h-bh-12),w:bw,h:bh})}return out}
+const MAP_BLOCKS=[
+  {x:0,y:0,w:150,h:150,type:'park',label:'Willow Park'},
+  {x:230,y:0,w:220,h:150,type:'building',label:'Civic Institute'},
+  {x:530,y:0,w:150,h:150,type:'building',label:'Market Row'},
+  {x:0,y:230,w:150,h:220,type:'building',label:'Sector 10'},
+  {x:230,y:230,w:220,h:220,type:'plaza',label:''},
+  {x:530,y:230,w:150,h:220,type:'building',label:'Sector 11'},
+  {x:0,y:530,w:150,h:150,type:'pond-park',label:'Rose Garden'},
+  {x:230,y:530,w:220,h:150,type:'building',label:'Foundry Blocks'},
+  {x:530,y:530,w:150,h:150,type:'park',label:'Leisure Valley'},
+];
+MAP_BLOCKS.forEach((b,i)=>{
+  b.trees=b.type!=='building'?makeTrees(b.x,b.y,b.w,b.h,b.type==='plaza'?11:7,100+i):[];
+  b.buildings=b.type==='building'?makeBuildings(b.x,b.y,b.w,b.h,5,300+i):[];
+});
+function drawMapBg(){
+  ctx.fillStyle='#e7e0ca';ctx.fillRect(0,0,680,680);
+  ctx.textAlign='left';
+  for(const b of MAP_BLOCKS){
+    ctx.save();
+    roundRect(ctx,b.x+2,b.y+2,b.w-4,b.h-4,12);ctx.clip();
+    if(b.type==='building'){
+      ctx.fillStyle='#dad3bc';ctx.fillRect(b.x,b.y,b.w,b.h);
+      for(const r of b.buildings){
+        ctx.fillStyle='rgba(20,20,15,.10)';ctx.fillRect(r.x+2,r.y+3,r.w,r.h);
+        ctx.fillStyle='#b7af96';ctx.fillRect(r.x,r.y,r.w,r.h);
+      }
+    }else{
+      ctx.fillStyle=b.type==='plaza'?'#b9d19d':'#9ec686';
+      ctx.fillRect(b.x,b.y,b.w,b.h);
+      if(b.type==='pond-park'){
+        ctx.fillStyle='#8dc3d9';
+        ctx.beginPath();ctx.ellipse(b.x+b.w*0.36,b.y+b.h*0.62,26,15,.3,0,Math.PI*2);ctx.fill();
+      }
+      if(b.type==='plaza'){
+        ctx.strokeStyle='rgba(255,255,255,.35)';ctx.lineWidth=6;ctx.lineCap='round';
+        ctx.beginPath();ctx.moveTo(b.x+20,b.y+b.h-20);ctx.quadraticCurveTo(b.x+b.w/2,b.y+b.h/2,b.x+b.w-20,b.y+20);ctx.stroke();
+      }
+      for(const t of b.trees){
+        ctx.fillStyle='rgba(20,30,15,.14)';ctx.beginPath();ctx.arc(t.x+1.5,t.y+2,t.r,0,Math.PI*2);ctx.fill();
+        ctx.fillStyle='#5c8c4f';ctx.beginPath();ctx.arc(t.x,t.y,t.r,0,Math.PI*2);ctx.fill();
+      }
+    }
+    ctx.restore();
+    if(b.label){
+      const align=b.x<=2?'left':(b.x+b.w>=678?'right':'center');
+      const lx=align==='left'?b.x+10:(align==='right'?b.x+b.w-10:b.x+b.w/2);
+      ctx.textAlign=align;
+      ctx.fillStyle='rgba(35,42,30,.7)';ctx.font='600 11px Inter, Segoe UI';
+      ctx.fillText(b.label,lx,b.y+18);
+    }
+  }
+  ctx.textAlign='left';
+}
+
 function roundRect(c,x,y,w,h,r){
   c.beginPath();
   c.moveTo(x+r,y);
@@ -328,7 +393,7 @@ function posToOffset(pos){return ((pos+30)/460)*280-140}
 function drawIntersection(id,iState){
   const [cx,cy]=CENTERS[id];
   const half=TILE_HALF,roadHalf=40,boxHalf=35;
-  ctx.fillStyle='#16333a';
+  ctx.fillStyle='#33383f';
   ctx.fillRect(cx-roadHalf,cy-half,roadHalf*2,half*2);
   ctx.fillRect(cx-half,cy-roadHalf,half*2,roadHalf*2);
   // Corners of the grid have two approaches with no neighbouring intersection.
@@ -338,15 +403,15 @@ function drawIntersection(id,iState){
     if(CONN[id][d])continue;
     let grad;
     ctx.save();
-    if(d==='N'){grad=ctx.createLinearGradient(0,cy-half,0,0);grad.addColorStop(0,'#16333a');grad.addColorStop(1,'rgba(22,51,58,0)');ctx.fillStyle=grad;ctx.fillRect(cx-roadHalf,0,roadHalf*2,cy-half);}
-    else if(d==='S'){grad=ctx.createLinearGradient(0,cy+half,0,680);grad.addColorStop(0,'#16333a');grad.addColorStop(1,'rgba(22,51,58,0)');ctx.fillStyle=grad;ctx.fillRect(cx-roadHalf,cy+half,roadHalf*2,680-(cy+half));}
-    else if(d==='E'){grad=ctx.createLinearGradient(cx+half,0,680,0);grad.addColorStop(0,'#16333a');grad.addColorStop(1,'rgba(22,51,58,0)');ctx.fillStyle=grad;ctx.fillRect(cx+half,cy-roadHalf,680-(cx+half),roadHalf*2);}
-    else{grad=ctx.createLinearGradient(cx-half,0,0,0);grad.addColorStop(0,'#16333a');grad.addColorStop(1,'rgba(22,51,58,0)');ctx.fillStyle=grad;ctx.fillRect(0,cy-roadHalf,cx-half,roadHalf*2);}
+    if(d==='N'){grad=ctx.createLinearGradient(0,cy-half,0,0);grad.addColorStop(0,'#33383f');grad.addColorStop(1,'rgba(51,56,63,0)');ctx.fillStyle=grad;ctx.fillRect(cx-roadHalf,0,roadHalf*2,cy-half);}
+    else if(d==='S'){grad=ctx.createLinearGradient(0,cy+half,0,680);grad.addColorStop(0,'#33383f');grad.addColorStop(1,'rgba(51,56,63,0)');ctx.fillStyle=grad;ctx.fillRect(cx-roadHalf,cy+half,roadHalf*2,680-(cy+half));}
+    else if(d==='E'){grad=ctx.createLinearGradient(cx+half,0,680,0);grad.addColorStop(0,'#33383f');grad.addColorStop(1,'rgba(51,56,63,0)');ctx.fillStyle=grad;ctx.fillRect(cx+half,cy-roadHalf,680-(cx+half),roadHalf*2);}
+    else{grad=ctx.createLinearGradient(cx-half,0,0,0);grad.addColorStop(0,'#33383f');grad.addColorStop(1,'rgba(51,56,63,0)');ctx.fillStyle=grad;ctx.fillRect(0,cy-roadHalf,cx-half,roadHalf*2);}
     ctx.restore();
   }
-  ctx.fillStyle='#0b2228';
+  ctx.fillStyle='#262a30';
   ctx.fillRect(cx-boxHalf,cy-boxHalf,boxHalf*2,boxHalf*2);
-  ctx.strokeStyle=iState.preempting?'#ff5c70':(iState.signalState==='yellow'?'#ffc94a':'#3a5a5e');
+  ctx.strokeStyle=iState.preempting?'#ff5c70':(iState.signalState==='yellow'?'#ffc94a':'#4a5058');
   ctx.lineWidth=iState.preempting||iState.signalState==='yellow'?3:1;
   ctx.strokeRect(cx-boxHalf,cy-boxHalf,boxHalf*2,boxHalf*2);
   ctx.strokeStyle='#b7a86b';ctx.setLineDash([8,8]);ctx.lineWidth=1.5;
@@ -465,8 +530,22 @@ function drawIntersection(id,iState){
     S:[cx+2,cy+boxHalf+3,12,6],
     W:[cx-boxHalf-9,cy+2,6,12]
   };
+  // Small traffic-light housing (dark pill with red/amber/green dots, lit
+  // dot bright) at each approach, instead of a single flat colour block.
   for(const d of ['N','E','S','W']){
-    const [lx,ly,lw,lh]=lightPos[d];ctx.fillStyle=lightColor(d);ctx.fillRect(lx,ly,lw,lh);
+    const [lx,ly,lw,lh]=lightPos[d];
+    const active=lightColor(d);
+    const vertical=lh>lw;
+    ctx.save();ctx.translate(lx+lw/2,ly+lh/2);
+    if(!vertical)ctx.rotate(Math.PI/2);
+    roundRect(ctx,-4.5,-8.5,9,17,3);ctx.fillStyle='#1b1f24';ctx.fill();
+    const dots=['#ff5c70','#ffc94a','#39d98a'];
+    dots.forEach((c,i)=>{
+      ctx.beginPath();ctx.arc(0,-5+i*5,1.7,0,Math.PI*2);
+      ctx.fillStyle=c===active?c:'rgba(255,255,255,.18)';
+      ctx.fill();
+    });
+    ctx.restore();
   }
   for(const v of iState.vehicles){
     if(v.passed)continue;
@@ -506,16 +585,12 @@ function drawIntersection(id,iState){
     }
     ctx.restore();
   }
-  ctx.fillStyle='#7fa8ac';ctx.font='11px Segoe UI';ctx.fillText(id,cx-half+4,cy-half+14);
 }
 
 function draw(){
   ctx.clearRect(0,0,680,680);
-  ctx.fillStyle='#050a10';ctx.fillRect(0,0,680,680);
+  drawMapBg();
   for(const id of IDS)drawIntersection(id,state.intersections[id]);
-  ctx.fillStyle='#7fa8ac';ctx.font='12px "JetBrains Mono",monospace';
-  ctx.fillText(`t = ${state.t.toFixed(1)}s`,10,16);
-  ctx.fillText(`mode: ${state.mode}`,10,32);
 }
 
 function drawChart(){
@@ -610,5 +685,19 @@ $('compareBtn').onclick=()=>{
   $('compareNote').textContent=`Fixed: ${f.served} vehicles exited the network · Adaptive: ${a.served} vehicles exited. Same seed & traffic profile, no emergency vehicles.`;
   render();
 };
+
+// --- Map overlay bar: segmented buttons mirror the (hidden) native
+// selects, so the simulation logic above is untouched — clicking a
+// segment just sets the select's value and fires its existing change
+// handler.
+function syncMapBar(){
+  document.querySelectorAll('#modeSeg .seg-btn').forEach(b=>b.classList.toggle('active',b.dataset.mode===$('modeSelect').value));
+  document.querySelectorAll('#trafficSeg .seg-btn').forEach(b=>b.classList.toggle('active',b.dataset.traffic===$('trafficSelect').value));
+  const label=$('signalsLabel');
+  if(label)label.textContent=$('modeSelect').value==='adaptive'?'Adaptive Signals':'Fixed-Time Signals';
+}
+document.querySelectorAll('#modeSeg .seg-btn').forEach(b=>b.onclick=()=>{$('modeSelect').value=b.dataset.mode;$('modeSelect').dispatchEvent(new Event('change'));syncMapBar()});
+document.querySelectorAll('#trafficSeg .seg-btn').forEach(b=>b.onclick=()=>{$('trafficSelect').value=b.dataset.traffic;$('trafficSelect').dispatchEvent(new Event('change'));syncMapBar()});
+syncMapBar();
 
 fresh();
