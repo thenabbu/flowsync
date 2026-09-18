@@ -185,18 +185,26 @@ function tick(dt){
     for(const v of iState.vehicles){
       if(v.passed)continue;
       const green=effectiveGreen(iState,v.d);
-      if(!v.committed && green && v.pos>=STOP_LINE-2){
+      // A vehicle commits either because it reaches the stop line on a green,
+      // or because the signal changed while it was already past the stop
+      // line (an abrupt preemption/pedestrian call) — too far in to stop
+      // safely, so let it clear the junction instead of freezing mid-road.
+      if(!v.committed && v.pos>=STOP_LINE-2 && (green||v.pos>STOP_LINE)){
         v.committed=true;
         const choice=chooseTurn(id,v.d);
         v.turnType=choice.type;v.outD=choice.outD;
       }
       // Once committed, the vehicle is allowed through the junction even if
       // the signal changes. Turning animation is rendered from the centre.
-      const speed=(green||v.committed||v.exiting)?.95:0;
+      // Non-committed vehicles keep driving at normal speed even on red, so
+      // they approach and queue right behind the zebra crossing instead of
+      // freezing wherever they happened to be when the light changed — they
+      // only actually stop once they reach the stop line itself.
+      const mustStop=!green && !v.committed && !v.exiting && v.pos>=STOP_LINE;
+      const speed=mustStop?0:.95;
       const nextPos=v.pos+speed*dt*35;
-      if(!v.committed && !green){v.pos=Math.min(v.pos,STOP_LINE)}
+      if(!v.committed && !green && !v.exiting){v.pos=Math.min(nextPos,STOP_LINE)}
       else v.pos=nextPos;
-      if(!v.committed && !green && v.pos>=STOP_LINE)v.pos=STOP_LINE;
       // Vehicles that have no connected intersection in their outgoing direction
       // keep moving until they visibly leave the entire simulation map.
       if(v.committed && v.pos>=430){
