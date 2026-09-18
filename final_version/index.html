@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FlowSync Network — Adaptive Traffic Control</title>
+<link rel="icon" type="image/jpeg" href="logo.jpg" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body class="min-h-screen text-base-content">
+
+<div class="max-w-[1440px] mx-auto p-4 md:p-7 space-y-5">
+
+  <header class="glass rounded-box px-4 md:px-6 py-4 flex flex-wrap items-center justify-between gap-3">
+    <div class="flex items-center gap-3">
+      <div class="brand-chip"><img src="logo.jpg" alt="FlowSync logo" class="w-full h-full object-cover rounded-[11px]" /></div>
+      <div>
+        <div class="flex items-center gap-2">
+          <h1 class="text-xl md:text-2xl font-bold leading-tight m-0">FlowSync</h1>
+          <span id="modeBadge" class="badge badge-primary font-bold text-[11px]">ADAPTIVE MODE</span>
+        </div>
+        <p class="text-xs opacity-60 m-0">Adaptive traffic signal simulation · 2×2 city grid</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2 text-xs opacity-70">
+      <span id="runDot" class="inline-block w-2 h-2 rounded-full bg-base-300"></span>
+      <span id="runLabel" class="mono">Paused</span>
+    </div>
+  </header>
+
+  <section class="glass rounded-box p-4 md:p-5">
+    <div class="section-eyebrow mb-3">CONTROLS</div>
+    <div class="flex flex-wrap items-end gap-3">
+      <button id="startBtn" class="btn btn-primary">▶ Start simulation</button>
+      <button id="stepBtn" class="btn btn-outline">Step</button>
+      <button id="emergencyBtn" class="btn btn-error">🚨 Dispatch emergency vehicle</button>
+      <button id="pedBtn" class="btn btn-outline">🚶 Call pedestrian crossing</button>
+      <button id="resetBtn" class="btn btn-ghost">Reset</button>
+      <div class="w-px self-stretch bg-white/10 mx-1 hidden md:block"></div>
+      <div class="flex flex-col gap-1">
+        <span class="text-xs opacity-60">Mode</span>
+        <select id="modeSelect" class="select select-sm">
+          <option value="adaptive">Adaptive</option>
+          <option value="fixed">Fixed-time</option>
+        </select>
+      </div>
+      <div class="flex flex-col gap-1">
+        <span class="text-xs opacity-60">Traffic</span>
+        <select id="trafficSelect" class="select select-sm">
+          <option value="normal">Normal</option>
+          <option value="rush">Rush hour</option>
+          <option value="easy-heavy">Easy-heavy</option>
+        </select>
+      </div>
+      <div class="flex flex-col gap-1 min-w-[140px]">
+        <span class="text-xs opacity-60">Speed</span>
+        <input id="speedRange" type="range" min="0.5" max="3" step="0.5" value="1" class="range range-primary range-sm" />
+      </div>
+    </div>
+  </section>
+
+  <main class="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-5">
+    <section class="glass rounded-box p-5">
+      <div class="flex justify-between items-start gap-3 flex-wrap">
+        <div>
+          <div class="section-eyebrow">LIVE NETWORK</div>
+          <p class="text-xs opacity-60 m-0 mt-1">Four coordinated intersections. Vehicles hand off between them as they travel through the grid.</p>
+        </div>
+      </div>
+      <div class="canvas-frame mt-4 rounded-box">
+        <canvas id="trafficCanvas" width="680" height="680" aria-label="Animated 2x2 grid of traffic intersections"></canvas>
+      </div>
+      <div id="intersectionsRow" class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5"></div>
+    </section>
+
+    <aside class="flex flex-col gap-4">
+      <section class="glass rounded-box p-5">
+        <div class="section-eyebrow mb-3">NETWORK METRICS</div>
+        <div class="flex flex-col gap-2">
+          <div class="metric-pill">
+            <span class="metric-dot" style="color:#35e0ff"></span>
+            <div class="flex-1">
+              <div class="text-[10.5px] opacity-60">Avg wait (full trip)</div>
+              <div class="mono text-xl font-semibold" id="avgWait">0.0s</div>
+            </div>
+          </div>
+          <div class="metric-pill">
+            <span class="metric-dot" style="color:#ffb547"></span>
+            <div class="flex-1">
+              <div class="text-[10.5px] opacity-60">Max queue (any node)</div>
+              <div class="mono text-xl font-semibold" id="maxQueue">0</div>
+            </div>
+          </div>
+          <div class="metric-pill">
+            <span class="metric-dot" style="color:#2de8a3"></span>
+            <div class="flex-1">
+              <div class="text-[10.5px] opacity-60">Throughput</div>
+              <div class="mono text-xl font-semibold" id="throughput">0</div>
+            </div>
+          </div>
+          <div class="metric-pill">
+            <span class="metric-dot" style="color:#ff4d6d"></span>
+            <div class="flex-1">
+              <div class="text-[10.5px] opacity-60">Total delay</div>
+              <div class="mono text-xl font-semibold" id="totalDelay">0s</div>
+            </div>
+          </div>
+        </div>
+        <div class="text-xs opacity-60 mt-3">Active vehicles: <b class="mono text-base-content" id="activeVehicles">0</b></div>
+        <div class="text-xs opacity-60">Pedestrian crossings granted: <b class="mono text-base-content" id="pedCrossings">0</b></div>
+        <div class="text-xs opacity-60 mt-1" id="emergencyStatus">No active emergency</div>
+      </section>
+
+      <section class="glass rounded-box p-5">
+        <div class="section-eyebrow mb-3">🧠 EXPLAINABLE AI DECISIONS</div>
+        <div id="decisions" class="flex flex-col gap-2 max-h-[340px] overflow-auto scroll-thin"></div>
+      </section>
+
+      <section class="glass rounded-box p-5">
+        <div class="section-eyebrow mb-3">CONTROLLER LOG</div>
+        <div id="log" class="h-[120px] overflow-auto scroll-thin mono text-xs leading-relaxed opacity-80" aria-live="polite"></div>
+      </section>
+    </aside>
+  </main>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+    <section class="glass rounded-box p-5">
+      <div class="section-eyebrow mb-3">PERFORMANCE COMPARISON</div>
+      <div class="grid grid-cols-3 gap-3 mb-4">
+        <div class="tile-card p-3"><span class="block text-[10.5px] opacity-60 mb-1">Fixed-time baseline</span><strong id="fixedResult" class="mono text-lg">Run baseline</strong></div>
+        <div class="tile-card p-3"><span class="block text-[10.5px] opacity-60 mb-1">Adaptive controller</span><strong id="adaptiveResult" class="mono text-lg">Run adaptive</strong></div>
+        <div class="tile-card p-3"><span class="block text-[10.5px] opacity-60 mb-1">Waiting-time change</span><strong id="improvement" class="mono text-lg">—</strong></div>
+      </div>
+      <button id="compareBtn" class="btn btn-primary btn-sm">Run 60-second comparison</button>
+      <p id="compareNote" class="text-xs opacity-60 mt-3">Both modes use the same traffic seed for a fair comparison. No emergency vehicles during the test.</p>
+    </section>
+    <section class="glass rounded-box p-5">
+      <div class="section-eyebrow mb-3">QUEUE HISTORY</div>
+      <canvas id="chartCanvas" width="700" height="220" aria-label="Queue history chart"></canvas>
+    </section>
+  </div>
+</div>
+<script src="script.js"></script>
+</body>
+</html>
