@@ -23,7 +23,7 @@ It demonstrates how adaptive traffic signals can respond to changing vehicle que
 - **Traffic scenarios**
   - Normal traffic
   - Rush-hour traffic
-  - East-heavy traffic
+  - Easy-heavy traffic
 
 - **Emergency vehicle priority**
   - Dispatch an emergency vehicle

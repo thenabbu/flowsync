@@ -29,7 +29,7 @@ function buildSchedules(profile,baseSeed){
   return SPAWNS.map((sp,idx)=>{
     const rnd=lcg((baseSeed+idx*7919)>>>0);
     const d=sp[1];
-    const rate=profile==='rush'?.85:profile==='imbalanced'?(d==='E'?.95:d==='W'?.65:.25):.22;
+    const rate=profile==='rush'?.85:profile==='easy-heavy'?(d==='E'?.95:d==='W'?.65:.25):.22;
     const arr=new Uint8Array(HORIZON);
     for(let i=0;i<HORIZON;i++){arr[i]=rnd()<rate*.05*.75?1:0}
     return arr;
@@ -71,34 +71,61 @@ function logMsg(id,s){
 
 function pushDecision(d){state.decisions.unshift(d);state.decisions=state.decisions.slice(0,8)}
 
-function phaseName(iState){return iState.phase===0?'North ↕ South':'East ↔ West'}
-function greenFor(iState,d){return iState.signalState==='green'&&(iState.phase===0?(d==='N'||d==='S'):(d==='E'||d==='W'))}
-function isYellowFor(iState,d){return iState.signalState==='yellow'&&(iState.phase===0?(d==='N'||d==='S'):(d==='E'||d==='W'))}
+function phaseName(iState){return ['North','East','South','West'][iState.phase]+' only'}
+function greenFor(iState,d){return iState.signalState==='green' && iState.phase===({N:0,E:1,S:2,W:3}[d])}
+function isYellowFor(iState,d){return iState.signalState==='yellow' && iState.phase===({N:0,E:1,S:2,W:3}[d])}
 function effectiveGreen(iState,d){if(iState.pedestrian&&iState.pedestrian.active)return false;return greenFor(iState,d)}
 function queueCount(iState,d){return iState.queues[d].length}
 
+// A single approach gets green at a time. This keeps the intersection simple
+// and makes turning movements safe to explain: every incoming lane has its own phase.
 function controllerFor(id){
   const iState=state.intersections[id];
   if(iState.preempting||iState.signalState==='yellow')return;
-  const ns=queueCount(iState,'N')+queueCount(iState,'S'),ew=queueCount(iState,'E')+queueCount(iState,'W');
   if(state.mode==='fixed'){iState.phaseDuration=20;return}
-  const active=iState.phase===0?ns:ew,other=iState.phase===0?ew:ns;
-  const activeName=iState.phase===0?'N/S':'E/W',otherName=iState.phase===0?'E/W':'N/S';
+  const dirs=['N','E','S','W'];
+  const activeDir=dirs[iState.phase];
+  const active=queueCount(iState,activeDir);
+  const others=dirs.filter(d=>d!==activeDir).map(d=>({d,q:queueCount(iState,d)}));
+  const best=others.reduce((a,b)=>b.q>a.q?b:a,{d:activeDir,q:active});
   iState.phaseDuration=Math.max(10,Math.min(30,10+active*1.8));
-  if(iState.phaseTime>=10&&other>active*1.35){
-    const reasoning=`${otherName} queue (${other}) is ${(other/Math.max(1,active)).toFixed(2)}× the ${activeName} queue (${active}), past the 1.35× threshold after the 10s minimum green → yellow, then switching to ${otherName}.`;
+  if(iState.phaseTime>=10 && best.q>Math.max(1,active)*1.35){
+    const reasoning=`${best.d} queue (${best.q}) is ${(best.q/Math.max(1,active)).toFixed(2)}× the ${activeDir} queue (${active}), past the 1.35× threshold after the 10s minimum green → yellow, then switching to ${best.d}.`;
     iState.signalState='yellow';iState.amberTimer=0;
-    iState.lastDecision=`${activeName} yielding — yellow before switching to ${otherName}.`;
+    iState.nextPhase=dirs.indexOf(best.d);
+    iState.lastDecision=`${activeDir} yielding — yellow before switching to ${best.d}.`;
     logMsg(id,iState.lastDecision);
-    pushDecision({id,type:'switch',t:state.t,reasoning,ns,ew});
+    pushDecision({id,type:'switch',t:state.t,reasoning,queues:{N:queueCount(iState,'N'),E:queueCount(iState,'E'),S:queueCount(iState,'S'),W:queueCount(iState,'W')}});
   }
+}
+
+function turnOptions(inD){
+  // Compass-relative: when travelling N, left=W/right=E; travelling S, left=E/right=W.
+  return {
+    N:{left:'W',straight:'N',right:'E',uturn:'S'},
+    E:{left:'N',straight:'E',right:'S',uturn:'W'},
+    S:{left:'E',straight:'S',right:'W',uturn:'N'},
+    W:{left:'S',straight:'W',right:'N',uturn:'E'}
+  }[inD];
+}
+
+function chooseTurn(id,inD){
+  const opts=turnOptions(inD), available=Object.entries(opts).filter(([type,outD])=>CONN[id][outD]);
+  if(!available.length)return {type:'uturn',outD:opts.uturn};
+  // Prefer straight, then left/right, with U-turn less common when alternatives exist.
+  const weights={straight:0.50,left:0.22,right:0.22,uturn:0.06};
+  const total=available.reduce((a,[type])=>a+weights[type],0);
+  let r=Math.random()*total;
+  for(const [type,outD] of available){r-=weights[type];if(r<=0)return {type,outD};}
+  const [type,outD]=available[0];return {type,outD};
 }
 
 function handleExit(id,v){
   const iState=state.intersections[id];
   iState.served++;iState.totalWait+=v.wait;
-  const nb=CONN[id][v.d];
-  if(nb){addVehicle(nb,v.d,0,v.emergency,v.tripWait)}
+  const outD=v.outD||v.d;
+  const nb=CONN[id][outD];
+  if(nb){addVehicle(nb,outD,0,v.emergency,v.tripWait)}
   else{state.globalServed++;state.globalTotalWait+=v.tripWait}
 }
 
@@ -113,8 +140,9 @@ function tick(dt){
       if(iState.signalState==='yellow'){
         iState.amberTimer+=dt;
         if(iState.amberTimer>=YELLOW_DURATION){
-          iState.phase=1-iState.phase;iState.phaseTime=0;iState.signalState='green';iState.amberTimer=0;
-          const active=iState.phase===0?(queueCount(iState,'N')+queueCount(iState,'S')):(queueCount(iState,'E')+queueCount(iState,'W'));
+          iState.phase=iState.nextPhase!==undefined?iState.nextPhase:(iState.phase+1)%4;
+          iState.nextPhase=undefined;iState.phaseTime=0;iState.signalState='green';iState.amberTimer=0;
+          const active=queueCount(iState,['N','E','S','W'][iState.phase]);
           iState.phaseDuration=Math.max(10,Math.min(30,10+active*1.8));
           iState.lastDecision=`Phase changed to ${phaseName(iState)}.`;
           logMsg(id,iState.lastDecision);
@@ -122,6 +150,7 @@ function tick(dt){
       }else{
         if(iState.phaseTime>=iState.phaseDuration){
           iState.signalState='yellow';iState.amberTimer=0;
+          iState.nextPhase=(iState.phase+1)%4;
           iState.lastDecision=`${phaseName(iState)} ending — yellow, then switching.`;
           logMsg(id,iState.lastDecision);
         }
@@ -131,21 +160,35 @@ function tick(dt){
     for(const v of iState.vehicles){
       if(v.passed)continue;
       const green=effectiveGreen(iState,v.d);
-      const beforeStop=!v.committed && v.pos<STOP_LINE;
-      // A vehicle may cross the stop line only while its approach is green.
-      // While red/yellow/pedestrian phase is active, clamp it at the stop line.
       if(!v.committed && green && v.pos>=STOP_LINE-2){
         v.committed=true;
+        const choice=chooseTurn(id,v.d);
+        v.turnType=choice.type;v.outD=choice.outD;
       }
-      let speed=(green||v.committed)?.95:0;
+      // Once committed, the vehicle is allowed through the junction even if
+      // the signal changes. Turning animation is rendered from the centre.
+      const speed=(green||v.committed||v.exiting)?.95:0;
       const nextPos=v.pos+speed*dt*35;
-      if(!v.committed && !green){
-        v.pos=Math.min(v.pos,STOP_LINE);
-      }else{
-        v.pos=nextPos;
-      }
+      if(!v.committed && !green){v.pos=Math.min(v.pos,STOP_LINE)}
+      else v.pos=nextPos;
       if(!v.committed && !green && v.pos>=STOP_LINE)v.pos=STOP_LINE;
-      if(v.committed&&v.pos>=430){v.passed=true;handleExit(id,v);continue}
+      // Vehicles that have no connected intersection in their outgoing direction
+      // keep moving until they visibly leave the entire simulation map.
+      if(v.committed && v.pos>=430){
+        const outD=v.outD||v.d;
+        const nb=CONN[id][outD];
+        if(nb){
+          v.passed=true;
+          handleExit(id,v);
+          continue;
+        }
+        v.exiting=true;
+      }
+      if(v.exiting && v.pos>=610){
+        v.passed=true;
+        handleExit(id,v);
+        continue;
+      }
       if(v.pos>=105&&!green&&!v.committed){v.wait+=dt;v.tripWait+=dt}
     }
     iState.vehicles=iState.vehicles.filter(v=>!v.passed);
@@ -162,7 +205,7 @@ function tick(dt){
       pushDecision({id,type:'ped-clear',t:state.t,reasoning:'Emergency vehicle detected — the walk phase was ended early so the signal can preempt.'});
     }
     if(emVeh){
-      const reqPhase=(emVeh.d==='N'||emVeh.d==='S')?0:1;
+      const reqPhase={N:0,E:1,S:2,W:3}[emVeh.d];
       if(iState.phase!==reqPhase||iState.signalState!=='green'){iState.phase=reqPhase;iState.phaseTime=0;iState.signalState='green';iState.amberTimer=0}
       if(!iState.preempting){
         iState.preempting=true;
@@ -176,7 +219,7 @@ function tick(dt){
           const ns2=state.intersections[nb];
           if(!ns2.preempting){
             ns2.preempting=true;
-            ns2.phase=(emVeh.d==='N'||emVeh.d==='S')?0:1;
+            ns2.phase={N:0,E:1,S:2,W:3}[emVeh.d];
             ns2.phaseTime=0;ns2.signalState='green';ns2.amberTimer=0;
             ns2.lastDecision='🚨 Pre-clearing ahead of approaching emergency vehicle.';
             logMsg(nb,ns2.lastDecision);
@@ -189,44 +232,21 @@ function tick(dt){
       iState.preempting=false;iState.phaseTime=0;
       iState.lastDecision='Emergency corridor cleared — resuming normal control.';
       logMsg(id,iState.lastDecision);
-      pushDecision({id,type:'resume',t:state.t,reasoning:'No emergency vehicle present at this node anymore — adaptive controller resumed.'});
+      pushDecision({id,type:'resume',t:state.t,reasoning:'Emergency vehicle cleared the intersection; normal adaptive control resumes.'});
     }
-
-    if(!iState.preempting){
-      if(iState.pedestrian.active){
-        iState.pedestrian.timer+=dt;
-        if(iState.pedestrian.timer>=PED_DURATION){
-          iState.pedestrian.active=false;iState.pedestrian.timer=0;iState.phaseTime=0;
-          iState.lastDecision='Crosswalk cleared — vehicles released, signal control resumed.';
-          logMsg(id,iState.lastDecision);
-          pushDecision({id,type:'ped-clear',t:state.t,reasoning:`Pedestrian finished crossing after ${PED_DURATION}s — all approaches released.`});
-        }
-      }else if(Math.random()<PED_CHANCE){
-        triggerPedestrian(id);
+    if(iState.pedestrian.active){
+      iState.pedestrian.timer-=dt;
+      if(iState.pedestrian.timer<=0){
+        iState.pedestrian.active=false;iState.pedestrian.timer=0;iState.phaseTime=0;
+        iState.lastDecision='Crosswalk cleared — vehicles released, signal control resumed.';
+        logMsg(id,iState.lastDecision);
+        pushDecision({id,type:'resume',t:state.t,reasoning:'Pedestrian crossing completed; vehicle phases resume.'});
       }
     }
   }
+  state.globalMaxQueue=Math.max(state.globalMaxQueue,...IDS.map(id=>state.intersections[id].maxQueue));
   state.historyGlobal.push({t:state.t,q:IDS.reduce((a,id)=>a+['N','E','S','W'].reduce((b,d)=>b+queueCount(state.intersections[id],d),0),0)});
-  if(state.historyGlobal.length>160)state.historyGlobal.shift();
-  state.globalMaxQueue=Math.max(...IDS.map(id=>state.intersections[id].maxQueue));
-}
-
-function triggerPedestrian(id){
-  const iState=state.intersections[id];
-  if(iState.preempting||iState.pedestrian.active)return false;
-  const side=['N','S','E','W'][Math.floor(Math.random()*4)];
-  iState.pedestrian.active=true;iState.pedestrian.timer=0;iState.pedestrian.side=side;
-  state.pedCount++;
-  iState.lastDecision=`🚶 Pedestrian crossing called on the ${side} crosswalk — all approaches held for ${PED_DURATION}s.`;
-  logMsg(id,iState.lastDecision);
-  pushDecision({id,type:'pedestrian',t:state.t,reasoning:`Walk button pressed at ${id} (${side} crosswalk) — every approach stops at that zebra crossing for ${PED_DURATION}s, regardless of signal phase.`});
-  return true;
-}
-
-function callPedestrian(){
-  const order=[...IDS].sort(()=>Math.random()-0.5);
-  const id=order.find(i=>!state.intersections[i].preempting&&!state.intersections[i].pedestrian.active)||order[0];
-  if(!triggerPedestrian(id))logMsg(id,'Crosswalk already in use or intersection is under emergency preemption — try again shortly.');
+  if(state.historyGlobal.length>180)state.historyGlobal.shift();
 }
 
 function spawnEmergency(){
@@ -358,16 +378,39 @@ function drawIntersection(id,iState){
   }
   ctx.textAlign='left';
   function lightColor(d){if(iState.pedestrian&&iState.pedestrian.active)return'#ff5c70';if(isYellowFor(iState,d))return'#ffc94a';return greenFor(iState,d)?'#39d98a':'#ff5c70'}
-  ctx.fillStyle=lightColor('N');ctx.fillRect(cx-14,cy-boxHalf-9,12,6);
-  ctx.fillStyle=lightColor('E');ctx.fillRect(cx+boxHalf+3,cy-2,6,12);
+  // One approach at a time gets green: N, E, S or W.
+  const lightPos={
+    N:[cx-14,cy-boxHalf-9,12,6],
+    E:[cx+boxHalf+3,cy-2,6,12],
+    S:[cx+2,cy+boxHalf+3,12,6],
+    W:[cx-boxHalf-9,cy+2,6,12]
+  };
+  for(const d of ['N','E','S','W']){
+    const [lx,ly,lw,lh]=lightPos[d];ctx.fillStyle=lightColor(d);ctx.fillRect(lx,ly,lw,lh);
+  }
   for(const v of iState.vehicles){
     if(v.passed)continue;
     const off=posToOffset(v.pos);
     let x=cx,y=cy,ang=0;
-    if(v.d==='N'){x=cx-12;y=cy-off;ang=0}
-    else if(v.d==='S'){x=cx+12;y=cy+off;ang=Math.PI}
-    else if(v.d==='E'){x=cx+off;y=cy+12;ang=Math.PI/2}
-    else{x=cx-off;y=cy-12;ang=-Math.PI/2}
+    if(v.committed&&v.turnType&&v.outD&&v.turnType!=='straight'&&v.pos>250){
+      // Cubic curve makes left/right/U-turns visible inside the junction.
+      const p=Math.max(0,Math.min(1,(v.pos-250)/180));
+      const start={N:[cx,cy+30],E:[cx-30,cy],S:[cx,cy-30],W:[cx+30,cy]}[v.d];
+      const end={N:[cx,cy-140],E:[cx+140,cy],S:[cx,cy+140],W:[cx-140,cy]}[v.outD];
+      const c1=[cx+(start[0]-cx)*0.25,cy+(start[1]-cy)*0.25];
+      const c2=[cx+(end[0]-cx)*0.25,cy+(end[1]-cy)*0.25];
+      const q=1-p;
+      x=q*q*q*start[0]+3*q*q*p*c1[0]+3*q*p*p*c2[0]+p*p*p*end[0];
+      y=q*q*q*start[1]+3*q*q*p*c1[1]+3*q*p*p*c2[1]+p*p*p*end[1];
+      const tx=3*q*q*(c1[0]-start[0])+6*q*p*(c2[0]-c1[0])+3*p*p*(end[0]-c2[0]);
+      const ty=3*q*q*(c1[1]-start[1])+6*q*p*(c2[1]-c1[1])+3*p*p*(end[1]-c2[1]);
+      ang=Math.atan2(ty,tx)+Math.PI/2;
+    }else{
+      if(v.d==='N'){x=cx-12;y=cy-off;ang=0}
+      else if(v.d==='S'){x=cx+12;y=cy+off;ang=Math.PI}
+      else if(v.d==='E'){x=cx+off;y=cy+12;ang=Math.PI/2}
+      else{x=cx-off;y=cy-12;ang=-Math.PI/2}
+    }
     ctx.save();ctx.translate(x,y);ctx.rotate(ang);
     if(v.emergency){
       ctx.fillStyle=(Math.floor(state.t*4)%2)?'#ff5c70':'#eef5ff';
@@ -435,12 +478,9 @@ function render(){
   emStatus.className='text-xs mt-1 '+(preemptCount?'text-error font-bold':'opacity-60');
   $('decisions').innerHTML=state.decisions.map(d=>{
     let bars='';
-    if(d.ns!==undefined){
-      const mx=Math.max(1,d.ns,d.ew);
-      bars=`<div class="flex flex-col gap-1 mt-2">
-        <div class="flex items-center gap-2 text-[11px] opacity-70"><span class="w-8">N/S</span><progress class="progress progress-info flex-1" value="${d.ns}" max="${mx}"></progress><b>${d.ns}</b></div>
-        <div class="flex items-center gap-2 text-[11px] opacity-70"><span class="w-8">E/W</span><progress class="progress progress-accent flex-1" value="${d.ew}" max="${mx}"></progress><b>${d.ew}</b></div>
-      </div>`;
+    if(d.queues){
+      const mx=Math.max(1,d.queues.N,d.queues.E,d.queues.S,d.queues.W);
+      bars=`<div class="grid grid-cols-2 gap-x-3 gap-y-1 mt-2">${['N','E','S','W'].map(x=>`<div class="flex items-center gap-1 text-[11px] opacity-70"><span class="w-3">${x}</span><progress class="progress progress-info flex-1" value="${d.queues[x]}" max="${mx}"></progress><b>${d.queues[x]}</b></div>`).join('')}</div>`;
     }
     const icon=d.type==='preempt'?'🚨':d.type==='resume'?'✅':d.type==='dispatch'?'🚑':d.type==='pedestrian'?'🚶':d.type==='ped-clear'?'🚦':'🔁';
     return `<div class="tile-card rounded-box p-3">
