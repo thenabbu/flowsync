@@ -1,0 +1,34 @@
+[
+  {
+    "name": "Shankar Chowk NH-48",
+    "lat": 28.5093629,
+    "lon": 77.0800658,
+    "nodeId": 1997715982,
+    "degree": 3,
+    "reachable": true
+  },
+  {
+    "name": "DLF Cyber Park gateway",
+    "lat": 28.5026722,
+    "lon": 77.0896107,
+    "nodeId": 6541634112,
+    "degree": 2,
+    "reachable": true
+  },
+  {
+    "name": "Cyber City metro/underpass",
+    "lat": 28.4981414,
+    "lon": 77.0893097,
+    "nodeId": 1648207861,
+    "degree": 2,
+    "reachable": true
+  },
+  {
+    "name": "Cyber Hub roundabout",
+    "lat": 28.4947676,
+    "lon": 77.0887364,
+    "nodeId": 1408792651,
+    "degree": 2,
+    "reachable": true
+  }
+]

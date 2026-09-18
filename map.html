@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FlowSync Cyber City — Adaptive Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<link href='https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css' rel='stylesheet'/>
+<link rel="stylesheet" href="map.css" />
+<style>
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+.glass{background:linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.015)), rgba(12,19,34,.65);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(14px);box-shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 20px 40px -24px rgba(0,0,0,.6)}
+.brand-chip{width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#35e0ff,#1b7fb8);color:#031318;font-weight:800;font-size:13px;letter-spacing:-.5px;box-shadow:0 0 0 1px rgba(255,255,255,.12) inset, 0 8px 20px -8px rgba(53,224,255,.55)}
+.metric-pill{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:10px 12px}
+.metric-dot{width:8px;height:8px;border-radius:99px;flex:none;box-shadow:0 0 10px 1px currentColor}
+.scroll-thin::-webkit-scrollbar{width:6px}
+.scroll-thin::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:99px}
+.section-eyebrow{font-size:11px;font-weight:700;letter-spacing:.4px;color:#8fa3b8}
+</style>
+</head>
+<body class="min-h-screen text-base-content">
+<div class="fixed inset-0 flex flex-col">
+  <header class="glass rounded-none border-x-0 border-t-0 px-4 md:px-6 py-3 flex items-center justify-between gap-3 z-10">
+    <div class="flex items-center gap-3">
+      <div class="brand-chip">FS</div>
+      <div>
+        <div class="flex items-center gap-2">
+          <h1 class="text-xl font-bold leading-tight m-0">FlowSync <span class="text-primary">Cyber City</span></h1>
+          <span class="badge badge-primary font-bold text-[11px]">ADAPTIVE MAP</span>
+        </div>
+        <p class="text-xs opacity-60 m-0 mono">28.5022°N 77.086°E · Gurgaon Cyber City</p>
+      </div>
+    </div>
+    <div class="hidden md:flex items-center gap-2 text-xs">
+      <div class="map-status mono"><span class="metric-dot" style="color:#2de8a3"></span><span id="mapState">Initializing map…</span></div>
+    </div>
+  </header>
+
+  <div class="flex-1 relative">
+    <div id="map"></div>
+    <div class="fixed bottom-4 left-4 right-4 md:right-auto md:w-[520px] z-20">
+      <div class="glass rounded-box p-3 flex flex-wrap items-end gap-2">
+        <button id="startBtn" class="btn btn-primary btn-sm">▶ Start</button>
+        <button id="resetBtn" class="btn btn-ghost btn-sm">Reset</button>
+        <div class="flex flex-col gap-1">
+          <span class="text-[10px] opacity-60">Mode</span>
+          <select id="modeSelect" class="select select-xs">
+            <option value="adaptive">Adaptive</option>
+            <option value="fixed">Fixed-time</option>
+          </select>
+        </div>
+        <div class="flex flex-col gap-1">
+          <span class="text-[10px] opacity-60">Traffic</span>
+          <select id="trafficSelect" class="select select-xs">
+            <option value="normal">Normal</option>
+            <option value="rush">Rush hour</option>
+            <option value="imbalanced">East-heavy</option>
+          </select>
+        </div>
+        <div class="flex flex-col gap-1 min-w-[100px]">
+          <span class="text-[10px] opacity-60">Speed</span>
+          <input id="speedRange" type="range" min="0.5" max="3" step="0.5" value="1" class="range range-primary range-sm" />
+        </div>
+        <button id="emergencyBtn" class="btn btn-error btn-sm">🚨 Emergency</button>
+        <button id="pedBtn" class="btn btn-outline btn-sm">🚶 Pedestrian</button>
+      </div>
+    </div>
+    <div class="fixed top-16 right-4 bottom-4 w-[320px] z-20 overflow-auto scroll-thin">
+      <div class="glass rounded-box p-4 space-y-4">
+        <div>
+          <div class="section-eyebrow mb-3">NETWORK METRICS</div>
+          <div class="flex flex-col gap-2">
+            <div class="metric-pill">
+              <span class="metric-dot" style="color:#35e0ff"></span>
+              <div class="flex-1">
+                <div class="text-[10.5px] opacity-60">Avg wait</div>
+                <div class="mono text-xl font-semibold" id="avgWait">0.0s</div>
+              </div>
+            </div>
+            <div class="metric-pill">
+              <span class="metric-dot" style="color:#ffb547"></span>
+              <div class="flex-1">
+                <div class="text-[10.5px] opacity-60">Max queue</div>
+                <div class="mono text-xl font-semibold" id="maxQueue">0</div>
+              </div>
+            </div>
+            <div class="metric-pill">
+              <span class="metric-dot" style="color:#2de8a3"></span>
+              <div class="flex-1">
+                <div class="text-[10.5px] opacity-60">Throughput</div>
+                <div class="mono text-xl font-semibold" id="throughput">0</div>
+              </div>
+            </div>
+            <div class="metric-pill">
+              <span class="metric-dot" style="color:#ff4d6d"></span>
+              <div class="flex-1">
+                <div class="text-[10.5px] opacity-60">Total delay</div>
+                <div class="mono text-xl font-semibold" id="totalDelay">0s</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="section-eyebrow mb-3">🧠 EXPLAINABLE AI DECISIONS</div>
+          <div id="decisions" class="flex flex-col gap-2 max-h-[200px] overflow-auto scroll-thin"></div>
+        </div>
+        <div>
+          <div class="section-eyebrow mb-3">CONTROLLER LOG</div>
+          <div id="log" class="h-[100px] overflow-auto scroll-thin mono text-xs leading-relaxed opacity-80" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="map.js"></script>
+<script src="map-engine.js"></script>
+<script src="map-render.js"></script>
+</body>
+</html>
