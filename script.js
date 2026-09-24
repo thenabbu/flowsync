@@ -111,6 +111,34 @@ function roundRect(c,x,y,w,h,r){
 
 function lcg(s0){let s=s0>>>0;return function(){s=(s*1664525+1013904223)>>>0;return s/4294967296}}
 
+// --- Deterministic randomness -------------------------------------------
+// Every stochastic decision draws from this seeded stream, so a given
+// (seed, scenario, config) replays identically. Math.random() must never be
+// used for traffic behaviour.
+let rng=lcg(42);
+function reseed(s){rng=lcg((s>>>0)||1)}
+function rnd(){return rng()}
+// A vehicle's route is fixed by (seed, vehicle id) instead of by the moment it
+// happened to reach the stop line, so fixed-time and adaptive runs give the
+// same vehicle the same turn — the comparison then sees equivalent traffic.
+function hash32(a,b){let h=(a^0x9e3779b9)>>>0;h=Math.imul(h^b,0x85ebca6b)>>>0;h^=h>>>13;h=Math.imul(h,0xc2b2ae35)>>>0;h^=h>>>16;return h>>>0}
+function routeFor(seedV,vid,inD){
+  const entries=Object.entries(turnOptions(inD));
+  const weights={straight:.50,left:.22,right:.22,uturn:.06};
+  const total=entries.reduce((a,[t])=>a+weights[t],0);
+  let r=(hash32((seedV|0)>>>0,vid>>>0)/4294967296)*total;
+  for(const [t,o] of entries){r-=weights[t];if(r<=0)return {type:t,outD:o}}
+  const [t,o]=entries[0];return {type:t,outD:o};
+}
+// Entry metering: a vehicle may not be added when its approach is already
+// backed up to the map edge, so queues cannot grow without bound off-screen.
+const SPAWN_EDGE=-30;
+function approachFull(st,d){
+  let rear=Infinity;
+  for(const v of st.vehicles){if(v.d===d&&!v.passed&&!v.committed&&!v.exiting&&v.pos<rear)rear=v.pos}
+  return rear<=SPAWN_EDGE;
+}
+
 function buildSchedules(profile,baseSeed){
   return SPAWNS.map((sp,idx)=>{
     const rnd=lcg((baseSeed+idx*7919)>>>0);
@@ -137,16 +165,29 @@ function fresh(){
   };
   for(const id of IDS)state.intersections[id]=freshIntersection();
   nextIdCounter=1;
+  reseed(seed);
   for(let i=0;i<8;i++){
     const [id,d]=SPAWNS[i%8];
-    addVehicle(id,d,Math.floor(i/8)*3+(i%8)*0.4);
+    addVehicle(id,d,Math.floor(i/8)*3+(i%8)*0.4,false,0,true);
   }
   logMsg('NET','Simulation reset — 2×2 grid online.');
   render();
 }
 
-function addVehicle(id,d,delay=0,emergency=false,tripWait=0){
-  state.intersections[id].vehicles.push({id:nextIdCounter++,d,pos:-30-delay*22,wait:0,tripWait,passed:false,emergency,committed:false});
+function addVehicle(id,d,delay=0,emergency=false,tripWait=0,force=false){
+  const st=state.intersections[id];
+  // Scheduled traffic is metered when the approach is full to the map edge;
+  // handoffs and emergency vehicles are always admitted (force).
+  if(!force&&approachFull(st,d))return false;
+  // A vehicle always enters BEHIND the last car on its approach. Without this a
+  // handoff from a neighbour processed later in the frame would land on top of
+  // an existing queue (the receiving lane's spacing pass has already run).
+  let pos=-30-delay*22,rear=Infinity;
+  for(const v of st.vehicles){if(v.d===d&&!v.passed&&!v.committed&&!v.exiting&&v.pos<rear)rear=v.pos}
+  if(rear<Infinity)pos=Math.min(pos,rear-MIN_GAP);
+  const vid=nextIdCounter++;
+  st.vehicles.push({id:vid,d,pos,wait:0,tripWait,passed:false,emergency,committed:false,route:routeFor(seed,vid,d)});
+  return true;
 }
 
 function logMsg(id,s){
@@ -169,13 +210,34 @@ function controllerFor(id){
   const iState=state.intersections[id];
   if(iState.preempting||iState.signalState==='yellow')return;
   if(state.mode==='fixed'){iState.phaseDuration=20;return}
+  
   const dirs=['N','E','S','W'];
   const activeDir=dirs[iState.phase];
   const active=queueCount(iState,activeDir);
-  const others=dirs.filter(d=>d!==activeDir).map(d=>({d,q:queueCount(iState,d)}));
-  const best=others.reduce((a,b)=>b.q>a.q?b:a,{d:activeDir,q:active});
+  const allQueues=dirs.map(d=>({d,q:queueCount(iState,d)}));
+  
+  // Starvation prevention: if current phase is empty but others have vehicles, switch sooner
+  if(active===0){
+    const nextNonEmpty=allQueues.find(x=>x.q>0&&x.d!==activeDir);
+    if(nextNonEmpty){
+      iState.phaseDuration=Math.max(5,iState.phaseDuration);
+      if(iState.phaseTime>=5){
+        iState.signalState='yellow';iState.amberTimer=0;
+        iState.nextPhase=dirs.indexOf(nextNonEmpty.d);
+        iState.lastDecision=`${activeDir} empty — yellow, then switching to ${nextNonEmpty.d}.`;
+        logMsg(id,iState.lastDecision);
+        pushDecision({id,type:'switch',t:state.t,reasoning:`${activeDir} has no vehicles (queue: 0) while ${nextNonEmpty.d} has ${nextNonEmpty.q} vehicles. Switching to prevent starvation.`,queues:{N:queueCount(iState,'N'),E:queueCount(iState,'E'),S:queueCount(iState,'S'),W:queueCount(iState,'W')}});
+      }
+      return;
+    }
+  }
+
+  // Dynamic green duration based on queue length
   iState.phaseDuration=Math.max(10,Math.min(30,10+active*1.8));
-  if(iState.phaseTime>=10 && best.q>Math.max(1,active)*1.35){
+
+  // Check if any other queue is significantly larger (threshold 1.35x) after minimum green
+  const best=allQueues.reduce((a,b)=>b.q>a.q?b:a,{d:activeDir,q:active});
+  if(iState.phaseTime>=10 && best.d!==activeDir && best.q>Math.max(1,active)*1.35){
     const reasoning=`${best.d} queue (${best.q}) is ${(best.q/Math.max(1,active)).toFixed(2)}× the ${activeDir} queue (${active}), past the 1.35× threshold after the 10s minimum green → yellow, then switching to ${best.d}.`;
     iState.signalState='yellow';iState.amberTimer=0;
     iState.nextPhase=dirs.indexOf(best.d);
@@ -205,7 +267,7 @@ function chooseTurn(id,inD){
   // Prefer straight, then left/right, with U-turn less common.
   const weights={straight:0.50,left:0.22,right:0.22,uturn:0.06};
   const total=entries.reduce((a,[type])=>a+weights[type],0);
-  let r=Math.random()*total;
+  let r=rnd()*total;
   for(const [type,outD] of entries){r-=weights[type];if(r<=0)return {type,outD};}
   const [type,outD]=entries[0];return {type,outD};
 }
@@ -215,7 +277,7 @@ function handleExit(id,v){
   iState.served++;iState.totalWait+=v.wait;
   const outD=v.outD||v.d;
   const nb=CONN[id][outD];
-  if(nb){addVehicle(nb,outD,0,v.emergency,v.tripWait)}
+  if(nb){addVehicle(nb,outD,0,v.emergency,v.tripWait,true)}
   else{state.globalServed++;state.globalTotalWait+=v.tripWait}
 }
 
@@ -256,7 +318,7 @@ function tick(dt){
       // safely, so let it clear the junction instead of freezing mid-road.
       if(!v.committed && v.pos>=STOP_LINE-2 && (green||v.pos>STOP_LINE)){
         v.committed=true;
-        const choice=chooseTurn(id,v.d);
+        const choice=v.route||chooseTurn(id,v.d);
         v.turnType=choice.type;v.outD=choice.outD;
       }
       // Once committed, the vehicle is allowed through the junction even if
@@ -301,7 +363,7 @@ function tick(dt){
       }
     }
     iState.vehicles=iState.vehicles.filter(v=>!v.passed);
-    for(const d of ['N','E','S','W'])iState.queues[d]=iState.vehicles.filter(v=>v.d===d&&v.pos>100&&v.pos<250&&!v.passed);
+    for(const d of ['N','E','S','W'])iState.queues[d]=iState.vehicles.filter(v=>v.d===d&&!v.passed&&!v.committed&&!v.exiting);
     iState.maxQueue=Math.max(iState.maxQueue,...['N','E','S','W'].map(d=>queueCount(iState,d)));
     iState.history.push({t:state.t,q:['N','E','S','W'].reduce((a,d)=>a+queueCount(iState,d),0)});
     if(iState.history.length>160)iState.history.shift();
@@ -359,8 +421,8 @@ function tick(dt){
 }
 
 function spawnEmergency(){
-  const [id,d]=SPAWNS[Math.floor(Math.random()*SPAWNS.length)];
-  addVehicle(id,d,0,true,0);
+  const [id,d]=SPAWNS[Math.floor(rnd()*SPAWNS.length)];
+  addVehicle(id,d,0,true,0,true);
   logMsg(id,`🚨 Emergency vehicle dispatched, entering grid heading ${d}.`);
   pushDecision({id,type:'dispatch',t:state.t,reasoning:`New emergency vehicle spawned at ${id} heading ${d}. Signals along its path will preempt as it approaches.`});
 }
@@ -377,8 +439,8 @@ function callPedestrian(){
     logMsg('NET','🚶 Pedestrian call ignored — every intersection is already mid-crossing or under emergency preemption.');
     return;
   }
-  const id=candidates[Math.floor(Math.random()*candidates.length)];
-  const side=['N','E','S','W'][Math.floor(Math.random()*4)];
+  const id=candidates[Math.floor(rnd()*candidates.length)];
+  const side=['N','E','S','W'][Math.floor(rnd()*4)];
   const iState=state.intersections[id];
   iState.pedestrian={active:true,timer:PED_DURATION,side};
   iState.phaseTime=0;
